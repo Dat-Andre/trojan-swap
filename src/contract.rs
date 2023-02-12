@@ -4,8 +4,8 @@ use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response,
 use cw2::set_contract_version;
 
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, GetCountResponse, InstantiateMsg, QueryMsg};
-use crate::state::{State, STATE};
+use crate::msg::{ExecuteMsg, GetConfigResponse, InstantiateMsg, QueryMsg};
+use crate::state::{Config, CONFIG};
 
 // version info for migration info
 const CONTRACT_NAME: &str = "crates.io:trojan-swap";
@@ -15,20 +15,24 @@ const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn instantiate(
     deps: DepsMut,
     _env: Env,
-    info: MessageInfo,
+    _info: MessageInfo,
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
-    let state = State {
-        count: msg.count,
-        owner: info.sender.clone(),
+    let state = Config {
+        owner: deps.api.addr_validate(&msg.owner)?,
+        mint_token_address: deps.api.addr_validate(&msg.mint_token_address)?,
+        payment_token_address: deps.api.addr_validate(&msg.payment_token_address)?,
+        receive_payment_address: deps.api.addr_validate(&msg.receive_payment_address)?,
     };
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
-    STATE.save(deps.storage, &state)?;
+    CONFIG.save(deps.storage, &state)?;
 
     Ok(Response::new()
         .add_attribute("method", "instantiate")
-        .add_attribute("owner", info.sender)
-        .add_attribute("count", msg.count.to_string()))
+        .add_attribute("owner", msg.owner)
+        .add_attribute("mint_token_address", msg.mint_token_address)
+        .add_attribute("payment_token_address", msg.payment_token_address)
+        .add_attribute("receive_payment_address", msg.receive_payment_address))
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -39,118 +43,134 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        ExecuteMsg::Increment {} => execute::increment(deps),
-        ExecuteMsg::Reset { count } => execute::reset(deps, info, count),
+        ExecuteMsg::Swap(msg) => execute::execute_swap(deps, info, msg),
+        ExecuteMsg::UpdateConfig {
+            owner,
+            mint_token_address,
+            payment_token_address,
+            receive_payment_address,
+        } => execute::execute_update_config(
+            deps,
+            info,
+            owner,
+            mint_token_address,
+            payment_token_address,
+            receive_payment_address,
+        ),
     }
 }
 
 pub mod execute {
+    use cosmwasm_std::{from_binary, Addr, Uint128};
+    use cw20::Cw20ReceiveMsg;
+
+    use crate::msg::ReceiveMsg;
+
     use super::*;
 
-    pub fn increment(deps: DepsMut) -> Result<Response, ContractError> {
-        STATE.update(deps.storage, |mut state| -> Result<_, ContractError> {
-            state.count += 1;
-            Ok(state)
-        })?;
+    pub fn execute_update_config(
+        deps: DepsMut,
+        info: MessageInfo,
+        owner: String,
+        mint_token_address: String,
+        payment_token_address: String,
+        receive_payment_address: String,
+    ) -> Result<Response, ContractError> {
+        let mut config = CONFIG.load(deps.storage)?;
 
-        Ok(Response::new().add_attribute("action", "increment"))
+        // only the owner can update the config
+        if info.sender != config.owner {
+            return Err(ContractError::Unauthorized {});
+        }
+
+        config.owner = deps.api.addr_validate(&owner)?;
+        config.mint_token_address = deps.api.addr_validate(&mint_token_address)?;
+        config.payment_token_address = deps.api.addr_validate(&payment_token_address)?;
+        config.receive_payment_address = deps.api.addr_validate(&receive_payment_address)?;
+
+        CONFIG.save(deps.storage, &config)?;
+
+        Ok(Response::new()
+            .add_attribute("method", "execute_update_config")
+            .add_attribute("owner", owner)
+            .add_attribute("mint_token_address", mint_token_address)
+            .add_attribute("payment_token_address", payment_token_address)
+            .add_attribute("receive_payment_address", receive_payment_address))
     }
 
-    pub fn reset(deps: DepsMut, info: MessageInfo, count: i32) -> Result<Response, ContractError> {
-        STATE.update(deps.storage, |mut state| -> Result<_, ContractError> {
-            if info.sender != state.owner {
-                return Err(ContractError::Unauthorized {});
-            }
-            state.count = count;
-            Ok(state)
-        })?;
-        Ok(Response::new().add_attribute("action", "reset"))
+    pub fn execute_swap(
+        deps: DepsMut,
+        info: MessageInfo,
+        wrapper: Cw20ReceiveMsg,
+    ) -> Result<Response, ContractError> {
+        let config = CONFIG.load(deps.storage)?;
+
+        // validate that the tranfered token is the payment token
+        if info.sender != config.payment_token_address {
+            return Err(ContractError::InvalidToken {
+                received: info.sender,
+                expected: config.payment_token_address,
+            });
+        }
+
+        let msg: ReceiveMsg = from_binary(&wrapper.msg)?;
+        let sender = deps.api.addr_validate(&wrapper.sender)?;
+        match msg {
+            ReceiveMsg::Swap {} => process_trojan(deps, sender, wrapper.amount),
+        }
+    }
+
+    pub fn process_trojan(
+        deps: DepsMut,
+        sender: Addr,
+        amount: Uint128,
+    ) -> Result<Response, ContractError> {
+        let config = CONFIG.load(deps.storage)?;
+
+        // create the cw20 mint message with recipient set to sender field of the Cw20ReceiveMsg
+        let cw_mint_msg = cw20::Cw20ExecuteMsg::Mint {
+            recipient: sender.to_string(),
+            amount,
+        };
+        let wasm_msg_mint = cosmwasm_std::WasmMsg::Execute {
+            contract_addr: config.mint_token_address.to_string(),
+            msg: to_binary(&cw_mint_msg)?,
+            funds: vec![],
+        };
+
+        // create the cw20 transfer message with recipient set to the receive_payment_address
+        let cw_transfer_msg = cw20::Cw20ExecuteMsg::Transfer {
+            recipient: config.receive_payment_address.to_string(),
+            amount,
+        };
+
+        let wasm_msg_transfer = cosmwasm_std::WasmMsg::Execute {
+            contract_addr: config.mint_token_address.to_string(),
+            msg: to_binary(&cw_transfer_msg)?,
+            funds: vec![],
+        };
+
+        Ok(Response::new()
+            .add_message(wasm_msg_mint)
+            .add_message(wasm_msg_transfer)
+            .add_attribute("action", "swap")
+            .add_attribute("asked by", sender.to_string())
+            .add_attribute("amount", amount))
     }
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
-        QueryMsg::GetCount {} => to_binary(&query::count(deps)?),
+        QueryMsg::GetConfig {} => to_binary(&query::get_config(deps)?),
     }
 }
 
 pub mod query {
     use super::*;
 
-    pub fn count(deps: Deps) -> StdResult<GetCountResponse> {
-        let state = STATE.load(deps.storage)?;
-        Ok(GetCountResponse { count: state.count })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
-    use cosmwasm_std::{coins, from_binary};
-
-    #[test]
-    fn proper_initialization() {
-        let mut deps = mock_dependencies();
-
-        let msg = InstantiateMsg { count: 17 };
-        let info = mock_info("creator", &coins(1000, "earth"));
-
-        // we can just call .unwrap() to assert this was a success
-        let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-        assert_eq!(0, res.messages.len());
-
-        // it worked, let's query the state
-        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-        let value: GetCountResponse = from_binary(&res).unwrap();
-        assert_eq!(17, value.count);
-    }
-
-    #[test]
-    fn increment() {
-        let mut deps = mock_dependencies();
-
-        let msg = InstantiateMsg { count: 17 };
-        let info = mock_info("creator", &coins(2, "token"));
-        let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-
-        // beneficiary can release it
-        let info = mock_info("anyone", &coins(2, "token"));
-        let msg = ExecuteMsg::Increment {};
-        let _res = execute(deps.as_mut(), mock_env(), info, msg).unwrap();
-
-        // should increase counter by 1
-        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-        let value: GetCountResponse = from_binary(&res).unwrap();
-        assert_eq!(18, value.count);
-    }
-
-    #[test]
-    fn reset() {
-        let mut deps = mock_dependencies();
-
-        let msg = InstantiateMsg { count: 17 };
-        let info = mock_info("creator", &coins(2, "token"));
-        let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-
-        // beneficiary can release it
-        let unauth_info = mock_info("anyone", &coins(2, "token"));
-        let msg = ExecuteMsg::Reset { count: 5 };
-        let res = execute(deps.as_mut(), mock_env(), unauth_info, msg);
-        match res {
-            Err(ContractError::Unauthorized {}) => {}
-            _ => panic!("Must return unauthorized error"),
-        }
-
-        // only the original creator can reset the counter
-        let auth_info = mock_info("creator", &coins(2, "token"));
-        let msg = ExecuteMsg::Reset { count: 5 };
-        let _res = execute(deps.as_mut(), mock_env(), auth_info, msg).unwrap();
-
-        // should now be 5
-        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-        let value: GetCountResponse = from_binary(&res).unwrap();
-        assert_eq!(5, value.count);
+    pub fn get_config(deps: Deps) -> StdResult<GetConfigResponse> {
+        let config = CONFIG.load(deps.storage)?;
+        Ok(GetConfigResponse { config })
     }
 }
