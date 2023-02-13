@@ -43,7 +43,7 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        ExecuteMsg::Swap(msg) => execute::execute_swap(deps, info, msg),
+        ExecuteMsg::Receive(msg) => execute::execute_swap(deps, info, msg),
         ExecuteMsg::UpdateConfig {
             owner,
             mint_token_address,

@@ -13,7 +13,7 @@ pub struct InstantiateMsg {
 
 #[cw_serde]
 pub enum ExecuteMsg {
-    Swap(Cw20ReceiveMsg),
+    Receive(Cw20ReceiveMsg),
     UpdateConfig {
         owner: String,
         mint_token_address: String,
