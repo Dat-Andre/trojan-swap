@@ -145,7 +145,7 @@ pub mod execute {
         };
 
         let wasm_msg_transfer = cosmwasm_std::WasmMsg::Execute {
-            contract_addr: config.mint_token_address.to_string(),
+            contract_addr: config.payment_token_address.to_string(),
             msg: to_binary(&cw_transfer_msg)?,
             funds: vec![],
         };
