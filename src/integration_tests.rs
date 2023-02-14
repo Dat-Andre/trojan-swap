@@ -11,7 +11,7 @@ mod tests {
 
     const DAO_ADDR: &str = "addr0001";
     const PAYMENT_ADDR: &str = "addr0002";
-    const ADDR3: &str = "addr0003";
+    const _ADDR3: &str = "addr0003";
     const ADDR4: &str = "addr0004";
 
     pub fn contract_trojan_swap() -> Box<dyn Contract<Empty>> {
@@ -132,21 +132,17 @@ mod tests {
         let msg = cw20_base::msg::ExecuteMsg::UpdateMinter {
             new_minter: Some(trojan_swap_addr.to_string()),
         };
-        app.borrow_mut().execute_contract(
-            Addr::unchecked(DAO_ADDR.to_string()),
-            cw20_mint_addr.clone(),
-            &msg,
-            &[],
-        );
+        let _err = app
+            .borrow_mut()
+            .execute_contract(
+                Addr::unchecked(DAO_ADDR.to_string()),
+                cw20_mint_addr.clone(),
+                &msg,
+                &[],
+            )
+            .unwrap();
 
         (cw20_mint_addr, cw20_payment_addr, trojan_swap_addr)
-        /* // Instantiate cw20 contract
-        let cw20_addr = instantiate_cw20(app, initial_balances);
-        app.update_block(next_block);
-        // Instantiate staking contract
-        let staking_addr = instantiate_staking(app, cw20_addr.clone(), unstaking_duration);
-        app.update_block(next_block);
-        (staking_addr, cw20_addr) */
     }
 
     #[test]
@@ -154,7 +150,7 @@ mod tests {
         let _deps = mock_dependencies();
 
         let mut app = mock_app();
-        let amount1 = Uint128::from(100u128);
+        let _amount1 = Uint128::from(100u128);
         let _token_address = Addr::unchecked("token_address");
         /* let initial_balances = vec![Cw20Coin {
             address: ADDR1.to_string(),
@@ -162,7 +158,7 @@ mod tests {
         }]; */
         let (cw20_mint_addr, cw20_payment_addr, trojan_swap_addr) = setup_test_case(&mut app);
 
-        let info = mock_info(PAYMENT_ADDR, &[]);
+        let _info = mock_info(PAYMENT_ADDR, &[]);
         let _env = mock_env();
 
         // Test swap
@@ -179,17 +175,6 @@ mod tests {
         )
         .unwrap();
 
-        /*  let msg = cw20::Cw20ExecuteMsg::Transfer {
-            recipient: DAO_ADDR.to_string(),
-            amount: Uint128::new(100),
-        };
-        app.execute_contract(
-            Addr::unchecked(PAYMENT_ADDR.to_string()),
-            cw20_payment_addr.clone(),
-            &msg,
-            &[],
-        ); */
-
         app.update_block(next_block);
         //Query payment_addr balance of minter and payment cw20
         let msg = cw20::Cw20QueryMsg::Balance {
@@ -197,7 +182,7 @@ mod tests {
         };
         let result: cw20::BalanceResponse = app
             .wrap()
-            .query_wasm_smart(cw20_payment_addr.clone(), &msg)
+            .query_wasm_smart(cw20_payment_addr, &msg)
             .unwrap();
 
         assert_eq!(result.balance, Uint128::new(900));
@@ -205,22 +190,8 @@ mod tests {
         let msg = cw20::Cw20QueryMsg::Balance {
             address: PAYMENT_ADDR.to_string(),
         };
-        let result: cw20::BalanceResponse = app
-            .wrap()
-            .query_wasm_smart(cw20_mint_addr.clone(), &msg)
-            .unwrap();
+        let result: cw20::BalanceResponse =
+            app.wrap().query_wasm_smart(cw20_mint_addr, &msg).unwrap();
         assert_eq!(result.balance, Uint128::from(100u128));
-
-        /* let msg = QueryMsg::StakedBalanceAtHeight {
-                address: address.into(),
-                height: None,
-            };
-        let result: StakedBalanceAtHeightResponse =
-                app.wrap().query_wasm_smart(contract_addr, &msg).unwrap();
-            result.balance     */
-
-        /*  let config = query_config(&app, &staking_addr);
-        assert_eq!(config.owner, Some(Addr::unchecked("owner2")));
-        assert_eq!(config.unstaking_duration, Some(Duration::Height(100))); */
     }
 }
